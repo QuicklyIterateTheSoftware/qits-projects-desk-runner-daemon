@@ -54,8 +54,8 @@ environment (`QITS_PROJECTS_DESK_RUNNER_*`).
 Plain JUnit 5. **No Mockito, no `@QuarkusTest`.** The runner is driven through the toolkit's own
 fixtures: `FakeRunnerHost` (a real Vert.x server: register door, token endpoint, control socket)
 and `FakeDocker` (a shell script the production process seam forks as docker), with
-`RunnerRuntime.NodeOptions` shrinking the node's clocks. `DeskRunnerTest` is the start of the
-lifecycle suite; the workspaces runner's `WorkspacesRunnerTest` is the shape to grow it into.
+`RunnerRuntime.NodeOptions` shrinking the node's clocks. `DeskRunnerTest` is the lifecycle suite,
+in the shape of the workspaces runner's `WorkspacesRunnerTest`; start a new case from it.
 
 Test names are sentences describing the behaviour.
 

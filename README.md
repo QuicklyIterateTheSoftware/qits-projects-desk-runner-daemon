@@ -13,10 +13,25 @@ only creates, starts, stops and removes the desk containers it is told to, and r
     ./mvnw verify                                                          # the JVM suite
     docker build -t qits-projects-desk-runner:dev -f docker/Dockerfile .   # the image (see docker/Dockerfile)
 
-> **State of this repository.** This first cut is the reactor, the protocol jar, the identity, the
-> image and the release. The domain registers and greets and answers nothing yet; the convergence
-> (estate/take → desk containers, remove, login probe, health check, inventory, housekeeping) is
-> the next change.
+## What the runner does with a desk
+
+The server's `estate` is the full list of this runner's desks, each with a desired state, and the
+runner converges every one of them (`DeskRunnerDomain`, `DeskLauncher`):
+
+- **RUNNING, no container** — the image is pulled when absent (under the runner's own registry
+  login, never your docker config), the desk volume and the node's `dot-claude`/`m2`/`pnpm` volumes
+  are created labelled, and the desk is `docker run` with `--init`, `--restart unless-stopped`, the
+  default bridge, no extra host and no docker socket.
+- **RUNNING, exited** — `docker start`. **RUNNING, another spec hash** — stopped, the container
+  removed (never its volume), run again with the new spec.
+- **STOPPED** — `docker stop`; the container and its volume stay.
+- A desk the estate no longer lists is stopped and removed at once, its volume at the next
+  housekeeping pass — and nothing at all is removed before an estate has arrived on the current
+  connection. A `remove` frame removes the container and its volume at once.
+
+It reports an `inventory` after every convergence and every 60 s, asks for new desks (`reserve`)
+only while fewer desks run than it has slots, probes the node's Claude login (`loginState`) at the
+greeting and on request, and answers a `healthCheck` by running the requested image once.
 
 ## Installing a runner (for the person at the machine)
 
