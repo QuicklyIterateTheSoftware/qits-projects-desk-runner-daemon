@@ -167,16 +167,27 @@ public final class DeskRunnerDomain implements RunnerDomain<DeskRunnerMessage> {
 
   /** Built by {@code RunnerLauncher} from the parsed settings, as every embedder's domain is. */
   public DeskRunnerDomain(RunnerSettings settings) {
-    this(settings, Timing.defaults(), Clock.systemUTC());
+    this(settings, ExternalVolumes.NONE);
+  }
+
+  /** The same, with the external node volumes {@link Main} parsed beside the settings. */
+  DeskRunnerDomain(RunnerSettings settings, ExternalVolumes external) {
+    this(settings, external, Timing.defaults(), Clock.systemUTC());
   }
 
   /** The same domain with the node's clocks a suite shrinks. */
   DeskRunnerDomain(RunnerSettings settings, Timing timing, Clock clock) {
+    this(settings, ExternalVolumes.NONE, timing, clock);
+  }
+
+  /** The same domain with external node volumes and the node's clocks a suite shrinks. */
+  DeskRunnerDomain(
+      RunnerSettings settings, ExternalVolumes external, Timing timing, Clock clock) {
     this.docker = RunnerDocker.of(identity, settings);
     this.runnerId = settings.runnerId();
     this.stateDir = settings.stateDir();
     this.names = new DeskNames(identity, settings.runnerId());
-    this.volumes = new NodeVolumes(identity, settings.runnerId());
+    this.volumes = new NodeVolumes(identity, settings.runnerId(), external);
     this.containers = new DeskContainers(identity, settings.runnerId(), docker);
     this.launcher = new DeskLauncher(docker, names, volumes, containers);
     this.healthCheck =
@@ -226,9 +237,9 @@ public final class DeskRunnerDomain implements RunnerDomain<DeskRunnerMessage> {
   }
 
   /**
-   * Admitted: the node's agent home and caches are made labelled (before the operator's login
-   * command could make the agent home unlabelled), the {@code inventory} goes out, and the tick runs
-   * from here on.
+   * Admitted: the runner's own agent home and caches are made labelled (before the operator's login
+   * command could make the agent home unlabelled) — an external one is the operator's and is never
+   * made — the {@code inventory} goes out, and the tick runs from here on.
    */
   @Override
   public void onAck(Ack ack, RunnerSession session) {
@@ -237,7 +248,7 @@ public final class DeskRunnerDomain implements RunnerDomain<DeskRunnerMessage> {
       return;
     }
     live = true;
-    for (String node : volumes.node()) {
+    for (String node : volumes.owned()) {
       ContainersDriver.OpResult made = volumes.ensureNode(session.driver(), node, docker.deadline());
       if (!made.ok()) {
         LOG.warnf("projects-desk-runner could not create %s: %s", node, made.detail());
@@ -289,7 +300,8 @@ public final class DeskRunnerDomain implements RunnerDomain<DeskRunnerMessage> {
    * decommission helper then removes every container and volume labelled {@code
    * qits.projects.desk.runner=<id>} — the desks', the agent home's and the caches' — the state
    * volume and the runner's own container. No {@code teardown()} item is needed: everything the
-   * runner creates carries that label.
+   * runner creates carries that label. An external node volume ({@link ExternalVolumes}) carries
+   * neither the label nor the runner's name prefix, so the helper can never reach it — it stays.
    */
   @Override
   public void onDecommission(RunnerSession session) {

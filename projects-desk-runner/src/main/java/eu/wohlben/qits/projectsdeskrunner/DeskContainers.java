@@ -16,7 +16,7 @@ import java.util.Optional;
  * qits-workspaces-runner-daemon's {@code WorkspaceContainers}, keyed on the project id.
  *
  * <p><b>Its own inspect, not the driver's</b>, for that class's three reasons: the driver's carries
- * no labels, and the convergence needs the spec-hash label; a docker that did not answer throws
+ * no labels, and the convergence needs the spec-hash and mounts labels; a docker that did not answer throws
  * here, so "could not read" never reads as "not there" (the reason {@link OwnResources} lists
  * through the process seam too); and it says {@code --type container}, because a desk's container
  * and its {@code /workspace} volume share a name, and an untyped {@code docker inspect} of a project
@@ -25,7 +25,12 @@ import java.util.Optional;
 final class DeskContainers {
 
   /** One desk container as docker reported it. */
-  record Seen(String id, String projectId, String status, int exitCode, String specHash) {
+  record Seen(
+      String id, String projectId, String status, int exitCode, String specHash, String mounts) {
+
+    Seen(String id, String projectId, String status, int exitCode, String specHash) {
+      this(id, projectId, status, exitCode, specHash, null);
+    }
 
     boolean running() {
       return "running".equals(status);
@@ -46,6 +51,8 @@ final class DeskContainers {
             + identity.workLabel()
             + "\"}}|{{index .Config.Labels \""
             + DeskLauncher.specHashLabel(identity)
+            + "\"}}|{{index .Config.Labels \""
+            + DeskLauncher.mountsLabel(identity)
             + "\"}}";
   }
 
@@ -125,7 +132,10 @@ final class DeskContainers {
     return seen;
   }
 
-  /** {@code <id>|<status>|<exitCode>|<projectId>|<specHash>}; empty when it is not a desk. */
+  /**
+   * {@code <id>|<status>|<exitCode>|<projectId>|<specHash>[|<mounts>]}; empty when it is not a
+   * desk. A container run before the mounts label existed has none, and reads as null.
+   */
   static Optional<Seen> parse(String line) {
     String[] fields = line.split("\\|", -1);
     if (fields.length < 5) {
@@ -136,13 +146,15 @@ final class DeskContainers {
       return Optional.empty();
     }
     String hash = value(fields[4]);
+    String mounts = fields.length > 5 ? value(fields[5]) : "";
     return Optional.of(
         new Seen(
             value(fields[0]),
             projectId,
             value(fields[1]).toLowerCase(Locale.ROOT),
             exitCode(value(fields[2])),
-            hash.isEmpty() ? null : hash));
+            hash.isEmpty() ? null : hash,
+            mounts.isEmpty() ? null : mounts));
   }
 
   /** Docker's own words for "there is no such thing". */

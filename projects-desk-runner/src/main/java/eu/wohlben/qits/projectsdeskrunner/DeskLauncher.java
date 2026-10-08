@@ -22,11 +22,15 @@ import org.jboss.logging.Logger;
  *
  * <ul>
  *   <li><b>RUNNING</b>, no container → the image pulled when absent (under the runner's own login),
- *       the desk volume and the node's three volumes made labelled, then {@code run};
+ *       every external node volume asked after ({@code launchFailed} when one is missing), the desk
+ *       volume and the runner's own node volumes made labelled, then {@code run};
  *   <li><b>RUNNING</b>, a container whose {@code qits.projects.desk.runner.spec-hash} label is the
  *       entry's {@code specHash} → {@code start} when it is not running, else nothing;
  *   <li><b>RUNNING</b>, a container of another hash → {@code stop}, {@code rm} the container —
  *       <b>never its volume</b>, which holds the work — then {@code run} the new spec;
+ *   <li><b>RUNNING</b>, a container whose {@code qits.projects.desk.runner.mounts} label is not
+ *       {@link NodeVolumes#mountsHash} (or that has none) → the same recreation: it was run with
+ *       other node volumes, e.g. its runner's own before the install line named the shared ones;
  *   <li><b>STOPPED</b> → {@code stop} when it runs; the container and its volume are kept.
  * </ul>
  *
@@ -51,6 +55,9 @@ final class DeskLauncher {
 
   /** The suffix of the label a desk container's spec hash rides under. */
   static final String SPEC_HASH_LABEL_SUFFIX = "spec-hash";
+
+  /** The suffix of the label a desk container's node mounts ({@link NodeVolumes#mountsHash}) ride. */
+  static final String MOUNTS_LABEL_SUFFIX = "mounts";
 
   /** What a convergence left: whether the desk now runs, and why not when it failed. */
   record Outcome(boolean running, String failure) {
@@ -90,6 +97,11 @@ final class DeskLauncher {
     return identity.driverNamespace() + SPEC_HASH_LABEL_SUFFIX;
   }
 
+  /** {@code qits.projects.desk.runner.mounts}: the node volumes the desk was run with, hashed. */
+  static String mountsLabel(RunnerIdentity identity) {
+    return identity.driverNamespace() + MOUNTS_LABEL_SUFFIX;
+  }
+
   /** Bring the node to the entry's desired state. Never throws: a failure is the outcome's. */
   Outcome converge(DeskEntry entry, RunnerSession session) {
     String projectId = entry.projectId();
@@ -113,7 +125,10 @@ final class DeskLauncher {
       }
       return Outcome.notRunning();
     }
-    if (seen.isPresent() && entry.specHash().equals(seen.get().specHash())) {
+    String mounts = volumes.mountsHash();
+    if (seen.isPresent()
+        && entry.specHash().equals(seen.get().specHash())
+        && mounts.equals(seen.get().mounts())) {
       if (seen.get().running()) {
         return Outcome.nowRunning();
       }
@@ -123,6 +138,18 @@ final class DeskLauncher {
       }
       LOG.infof("projects-desk-runner started the desk of project %s again", projectId);
       return Outcome.nowRunning();
+    }
+    // An external node volume is the operator's: asked after, never made — a -v naming one that is
+    // not there would create it empty, unlabelled, and the desk would run with no login. Asked
+    // before an old container goes, so a missing one never costs a desk that still runs.
+    Optional<String> missing;
+    try {
+      missing = volumes.missing(docker);
+    } catch (RuntimeException e) {
+      return failed(projectId, e.getMessage());
+    }
+    if (missing.isPresent()) {
+      return failed(projectId, missing.get());
     }
     if (seen.isPresent()) {
       // Another spec: the container goes, its volume stays — the work lives there, not here. A
@@ -140,13 +167,21 @@ final class DeskLauncher {
         return failed(
             projectId, "docker could not remove " + name + "'s old container: " + brief(gone.detail()));
       }
-      LOG.infof("projects-desk-runner recreates the desk of project %s: its spec changed", projectId);
+      LOG.infof(
+          "projects-desk-runner recreates the desk of project %s: its %s changed",
+          projectId,
+          entry.specHash().equals(seen.get().specHash()) ? "node volumes" : "spec");
     }
-    return create(projectId, name, entry.spec(), entry.specHash(), session);
+    return create(projectId, name, entry.spec(), entry.specHash(), mounts, session);
   }
 
   private Outcome create(
-      String projectId, String name, DeskSpec spec, String hash, RunnerSession session) {
+      String projectId,
+      String name,
+      DeskSpec spec,
+      String hash,
+      String mounts,
+      RunnerSession session) {
     ContainersDriver driver = session.driver();
     Duration deadline = docker.deadline();
     ContainerSpec container;
@@ -165,7 +200,7 @@ final class DeskLauncher {
           projectId,
           "docker could not create the volume " + volumes.desk(projectId) + ": " + brief(desk.detail()));
     }
-    for (String node : volumes.node()) {
+    for (String node : volumes.owned()) {
       ContainersDriver.OpResult made = volumes.ensureNode(driver, node, deadline);
       if (!made.ok()) {
         return failed(
@@ -174,6 +209,7 @@ final class DeskLauncher {
     }
     Map<String, String> labels = new LinkedHashMap<>(session.own().labels(projectId));
     labels.put(specHashLabel(session.identity()), hash);
+    labels.put(mountsLabel(session.identity()), mounts);
     ContainersDriver.Started started =
         driver.run(container, name, labels, LifecyclePolicy.explicitLifetime(), deadline);
     if (!started.started()) {

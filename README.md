@@ -94,13 +94,15 @@ containers.
 |---|---|---|
 | the runner | `qits-projects-desk-runner-<id8>-<version>` | `qits.projects.desk.runner.process=<id>`, `qits.projects.desk.runner.version=<version>` |
 | its state | volume `qits-projects-desk-runner-state-<id8>` at `/var/lib/qits-projects-desk-runner` | — |
-| a desk (project `<projectId>`) | container and volume `qits-projects-desk-runner-desk-<projectId>-<id8>` | `qits.projects.desk.runner=<id>`, `qits.projects.desk.runner.project=<projectId>` (the container also `qits.projects.desk.runner.spec-hash=<hash>`) |
-| the agent home and caches | volumes `qits-projects-desk-runner-<dot-claude\|m2\|pnpm>-<id8>` | `qits.projects.desk.runner=<id>` |
+| a desk (project `<projectId>`) | container and volume `qits-projects-desk-runner-desk-<projectId>-<id8>` | `qits.projects.desk.runner=<id>`, `qits.projects.desk.runner.project=<projectId>` (the container also `qits.projects.desk.runner.spec-hash=<hash>` and `qits.projects.desk.runner.mounts=<hash of its node volumes>`) |
+| the agent home and caches | volumes `qits-projects-desk-runner-<dot-claude\|m2\|pnpm>-<id8>` — or the external volumes the three `…_VOLUME` variables name, which are not the runner's | `qits.projects.desk.runner=<id>` (an external volume: none, ever) |
 
 ### Environment
 
-The install script passes the first four; the rest are qits-runner-toolkit's, for an operator with
-a reason. A successor inherits whatever its predecessor was given.
+The install script passes the first four; the three `…_VOLUME` variables are install-page tuning
+the line passes through when it sets them; the rest are qits-runner-toolkit's, for an operator with
+a reason. A successor inherits whatever its predecessor was given: it is started from a `docker
+inspect` of the running container, every variable included.
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -108,6 +110,9 @@ a reason. A successor inherits whatever its predecessor was given.
 | `QITS_PROJECTS_DESK_RUNNER_ID` | The runner id the runners page minted. | required |
 | `QITS_PROJECTS_DESK_RUNNER_REGISTRATION_TOKEN` | One-time registration token, needed until registered; a different one later registers again. | required until registered |
 | `QITS_PROJECTS_DESK_RUNNER_SLOTS` | How many desks this machine runs. Advertised; the runners page's number wins. | `1` |
+| `QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME` | An existing docker volume every desk (and the login probe) mounts at `/claude-home` instead of the runner's own `dot-claude`. | unset: the runner's own |
+| `QITS_PROJECTS_DESK_RUNNER_M2_VOLUME` | Likewise for `/caches/m2`. | unset: the runner's own |
+| `QITS_PROJECTS_DESK_RUNNER_PNPM_VOLUME` | Likewise for `/caches/pnpm`. | unset: the runner's own |
 | `QITS_PROJECTS_DESK_RUNNER_STATE_DIR` | Where `client.json` lives — the state volume's mount point. | `/var/lib/qits-projects-desk-runner` |
 | `QITS_PROJECTS_DESK_RUNNER_DOCKER_BINARY` | The docker CLI. | `docker` (the image's) |
 | `QITS_PROJECTS_DESK_RUNNER_DOCKER_TIMEOUT` | Seconds any one docker call may take. | `120` |
@@ -118,6 +123,25 @@ a reason. A successor inherits whatever its predecessor was given.
 
 The runner's log is `docker logs` on the machine, and also lands on the platform under
 `_service/qits-projects-desk-runner`.
+
+### Sharing the node's agent home and caches
+
+Where the machine already has the volumes every other platform container mounts — **on the
+platform host, paste the line with**
+
+    QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME=qits_shared_dot_claude QITS_PROJECTS_DESK_RUNNER_M2_VOLUME=qits_shared_m2 QITS_PROJECTS_DESK_RUNNER_PNPM_VOLUME=qits_shared_pnpm
+
+added to its `env` — the desks mount those instead of volumes of their own: the same Claude login
+as every other agent there (no copy, no second login) and the same maven and pnpm caches. Each
+variable is independent; unset or blank means the runner's own volume, exactly as without it.
+
+An external volume is **not the runner's**: it is never created, never labelled and never removed —
+not by housekeeping, not by a `remove`, not at decommission. A desk launched while one is missing
+is reported `launchFailed` ("node volume `<name>` named by `QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME`
+does not exist") rather than run against an empty volume docker would make. A value that is no
+docker volume name (`[A-Za-z0-9][A-Za-z0-9_.-]*`) refuses to start, exit 2. A desk that was run
+with other node volumes — e.g. before the line set these — is recreated on the new ones at the next
+`estate`, keeping its `/workspace` volume, as for a changed spec.
 
 ### Exit codes
 

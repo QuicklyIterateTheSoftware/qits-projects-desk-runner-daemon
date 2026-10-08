@@ -14,8 +14,9 @@ import org.jboss.logging.Logger;
 
 /**
  * Whether Claude Code is logged in on this node — presence only. A copy of
- * qits-workspaces-runner-daemon's {@code LoginProbe} pointed at this runner's {@code dot-claude}
- * ({@link NodeVolumes#dotClaude}) and the pinned project-agent image: {@code claude auth status}
+ * qits-workspaces-runner-daemon's {@code LoginProbe} pointed at the node's agent home ({@link
+ * NodeVolumes#dotClaude}: this runner's {@code dot-claude}, or the external volume {@code
+ * QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME} names) and the pinned project-agent image: {@code claude auth status}
  * with {@code HOME=/claude-home} and {@code CLAUDE_CONFIG_DIR=/claude-home/.claude} — exactly where
  * every desk container's own {@code CLAUDE_CONFIG_DIR} points — read by {@code loggedIn} in the JSON
  * it prints. The front desk runs Claude only, so there is no Kimi probe.
@@ -69,10 +70,20 @@ final class LoginProbe {
         LOG.infof("projects-desk-runner's login probe cannot run: the desk image is not here yet");
         return Optional.empty();
       }
-      ContainersDriver.OpResult home = volumes.ensureDotClaude(driver, docker.deadline());
-      if (!home.ok()) {
-        LOG.warnf("projects-desk-runner's login probe cannot run: no agent home volume");
-        return Optional.empty();
+      if (volumes.dotClaudeExternal()) {
+        // The operator's agent home: asked after, never made, so a missing one stays missing
+        // rather than reading ABSENT out of an empty volume docker would create.
+        Optional<String> missing = volumes.dotClaudeMissing(docker);
+        if (missing.isPresent()) {
+          LOG.warnf("projects-desk-runner's login probe cannot run: %s", missing.get());
+          return Optional.empty();
+        }
+      } else {
+        ContainersDriver.OpResult home = volumes.ensureDotClaude(driver, docker.deadline());
+        if (!home.ok()) {
+          LOG.warnf("projects-desk-runner's login probe cannot run: no agent home volume");
+          return Optional.empty();
+        }
       }
       Optional<LoginPresence> claude = claude(docker.run(argv(image, user)));
       LOG.infof(

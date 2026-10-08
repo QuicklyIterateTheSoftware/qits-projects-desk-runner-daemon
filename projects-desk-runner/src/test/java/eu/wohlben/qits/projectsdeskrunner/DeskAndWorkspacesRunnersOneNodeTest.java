@@ -142,15 +142,17 @@ class DeskAndWorkspacesRunnersOneNodeTest {
   void neitherRunnerListsNamesOrRemovesTheOthersContainersOrVolumes() throws Exception {
     // The front desk's: a running desk of P1 and its volume.
     String desk1 = DESK.nodeName(DESK_ID, "desk-" + P1);
+    String mounts = new NodeVolumes(DESK, DESK_ID).mountsHash();
     String desk2 = DESK.nodeName(DESK_ID, "desk-" + P2);
     node.container(
         desk1,
         Map.of(
             DESK.ownerLabel(), DESK_ID,
             DESK.workLabel(), P1,
-            DESK.driverNamespace() + "spec-hash", "h1"));
+            DESK.driverNamespace() + "spec-hash", "h1",
+            DESK.driverNamespace() + "mounts", mounts));
     node.volume(desk1, Map.of(DESK.ownerLabel(), DESK_ID, DESK.workLabel(), P1));
-    node.answerFor("inspect", desk1, 0, "c1|running|0|" + P1 + "|h1\n", "");
+    node.answerFor("inspect", desk1, 0, "c1|running|0|" + P1 + "|h1|" + mounts + "\n", "");
     // The workspaces runner's: a workspace left from an earlier session, and its volume.
     String leftover = WORKSPACES.nodeName(WS_ID, "ws-9");
     node.container(leftover, Map.of(WORKSPACES.ownerLabel(), WS_ID, WORKSPACES.workLabel(), "9"));
@@ -179,7 +181,7 @@ class DeskAndWorkspacesRunnersOneNodeTest {
 
     // Both converge: the desk of P2 runs, the workspace w1 runs, the workspace leftover is reaped.
     awaitTrue(() -> node.containers().containsKey(desk2));
-    node.answerFor("inspect", desk2, 0, "c2|running|0|" + P2 + "|h2\n", "");
+    node.answerFor("inspect", desk2, 0, "c2|running|0|" + P2 + "|h2|" + mounts + "\n", "");
     awaitTrue(() -> node.containers().containsKey(WORKSPACES.nodeName(WS_ID, "item-w1")));
     awaitTrue(() -> !node.containers().containsKey(leftover));
     awaitTrue(() -> !node.volumes().containsKey(leftover));

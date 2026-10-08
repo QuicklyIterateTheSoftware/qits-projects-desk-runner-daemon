@@ -2,6 +2,7 @@ package eu.wohlben.qits.projectsdeskrunner;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.runner.toolkit.RunnerLauncher;
@@ -10,7 +11,11 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import eu.wohlben.qits.runner.toolkit.RunnerSettings;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -66,5 +71,62 @@ class MainTest {
             Map.of("QITS_PROJECTS_DESK_RUNNER_STATE_DIR", state.toString())::get,
             new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
     assertEquals(1, health, "no heartbeat yet");
+  }
+
+  @Test
+  void anInvalidExternalVolumeNameRefusesToStartBeforeTheToolkitRuns() {
+    for (String bad : List.of("bad/name", "-leading", "two words", "a:b", "x".repeat(129))) {
+      Map<String, String> env = new HashMap<>();
+      env.put("QITS_PROJECTS_DESK_RUNNER_URL", "https://projects.qits.example.eu");
+      env.put("QITS_PROJECTS_DESK_RUNNER_ID", "r1");
+      env.put("QITS_PROJECTS_DESK_RUNNER_REGISTRATION_TOKEN", "qits_tok_X");
+      env.put("QITS_PROJECTS_DESK_RUNNER_STATE_DIR", state.toString());
+      env.put("QITS_PROJECTS_DESK_RUNNER_M2_VOLUME", bad);
+      // No Vert.x: a run that got past the refusal would fail on it, not exit 2.
+      int code =
+          Main.runner(
+              null,
+              new String[0],
+              env::get,
+              new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+      assertEquals(2, code, bad);
+    }
+  }
+
+  @Test
+  void theExternalVolumesParseUnsetBlankAndValidNamesAndNameTheVariableOfABadOne()
+      throws Exception {
+    assertEquals(
+        ExternalVolumes.NONE, ExternalVolumes.parse(DeskRunnerIdentity.IDENTITY, name -> null));
+    assertEquals(
+        ExternalVolumes.NONE,
+        ExternalVolumes.parse(
+            DeskRunnerIdentity.IDENTITY,
+            Map.of(
+                    "QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME", "  ",
+                    "QITS_PROJECTS_DESK_RUNNER_M2_VOLUME", "")
+                ::get));
+    assertEquals(
+        new ExternalVolumes(
+            Optional.of("qits_shared_dot_claude"),
+            Optional.of("qits_shared_m2"),
+            Optional.of("Shared.pnpm-1")),
+        ExternalVolumes.parse(
+            DeskRunnerIdentity.IDENTITY,
+            Map.of(
+                    "QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME", " qits_shared_dot_claude ",
+                    "QITS_PROJECTS_DESK_RUNNER_M2_VOLUME", "qits_shared_m2",
+                    "QITS_PROJECTS_DESK_RUNNER_PNPM_VOLUME", "Shared.pnpm-1")
+                ::get));
+    RunnerSettings.Invalid invalid =
+        assertThrows(
+            RunnerSettings.Invalid.class,
+            () ->
+                ExternalVolumes.parse(
+                    DeskRunnerIdentity.IDENTITY,
+                    Map.of("QITS_PROJECTS_DESK_RUNNER_PNPM_VOLUME", "_nope")::get));
+    assertTrue(
+        invalid.getMessage().startsWith("QITS_PROJECTS_DESK_RUNNER_PNPM_VOLUME "),
+        invalid.getMessage());
   }
 }

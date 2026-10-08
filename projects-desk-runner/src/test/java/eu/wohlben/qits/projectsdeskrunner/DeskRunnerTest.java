@@ -99,6 +99,21 @@ class DeskRunnerTest {
   private static final String M2 = "qits-projects-desk-runner-m2-r1";
   private static final String PNPM = "qits-projects-desk-runner-pnpm-r1";
 
+  /** The platform host's shared volumes, as its install line names them. */
+  private static final String SHARED_CLAUDE = "qits_shared_dot_claude";
+
+  private static final String SHARED_M2 = "qits_shared_m2";
+  private static final String SHARED_PNPM = "qits_shared_pnpm";
+
+  private static final Map<String, String> SHARED_ENV =
+      Map.of(
+          "QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME", SHARED_CLAUDE,
+          "QITS_PROJECTS_DESK_RUNNER_M2_VOLUME", SHARED_M2,
+          "QITS_PROJECTS_DESK_RUNNER_PNPM_VOLUME", SHARED_PNPM);
+
+  /** The mounts label of a desk run with the runner's own node volumes. */
+  private static final String OWN_MOUNTS = new NodeVolumes(IDENTITY, RUNNER_ID).mountsHash();
+
   private final Vertx vertx = Vertx.vertx();
   private FakeRunnerHost host;
   private FakeDocker docker;
@@ -116,6 +131,9 @@ class DeskRunnerTest {
           Duration.ofSeconds(60));
 
   private long housekeepingMillis = TimeUnit.HOURS.toMillis(6);
+
+  /** Variables beside the toolkit's, e.g. the external node volumes. */
+  private final Map<String, String> extraEnv = new HashMap<>();
 
   @TempDir Path state;
   @TempDir Path dockerDir;
@@ -180,6 +198,8 @@ class DeskRunnerTest {
             "1000",
             "--label",
             "qits.projects.desk.runner=r1",
+            "--label",
+            "qits.projects.desk.runner.mounts=" + OWN_MOUNTS,
             "--label",
             "qits.projects.desk.runner.project=" + P1,
             "--label",
@@ -623,6 +643,242 @@ class DeskRunnerTest {
     assertFalse(touched("rm", desk(P1)), "the decommission helper removes it, not the domain");
   }
 
+  // ---- external node volumes (the platform host's shared agent home and caches) -------------------
+
+  @Test
+  void externalVolumesAreMountedByTheDeskAndTheLoginProbeAndNeverCreatedOrLabelled()
+      throws Exception {
+    sharedVolumes();
+    estateThenAck(entry(P1, DesiredState.RUNNING, H1));
+    start();
+
+    awaitTrue(() -> !runsOf(desk(P1)).isEmpty());
+    List<String> run = runOf(desk(P1));
+    String joined = String.join(" ", run);
+    assertTrue(joined.contains("-v " + desk(P1) + ":/workspace"), joined);
+    assertTrue(joined.contains("-v " + SHARED_CLAUDE + ":/claude-home"), joined);
+    assertTrue(joined.contains("-v " + SHARED_M2 + ":/caches/m2"), joined);
+    assertTrue(joined.contains("-v " + SHARED_PNPM + ":/caches/pnpm"), joined);
+    assertTrue(joined.contains("qits.projects.desk.runner.mounts=" + sharedMounts()), joined);
+    assertFalse(sharedMounts().equals(OWN_MOUNTS));
+
+    host.await(LoginState.class);
+    List<String> probe =
+        docker.calls("run").stream()
+            .filter(c -> c.contains("status"))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError(docker.calls()));
+    assertTrue(probe.contains(SHARED_CLAUDE + ":/claude-home"), probe::toString);
+
+    for (String shared : List.of(SHARED_CLAUDE, SHARED_M2, SHARED_PNPM)) {
+      assertEquals(Map.of(), docker.volumes().get(shared), "never labelled: " + shared);
+      assertTrue(
+          docker.calls("volume").stream()
+              .noneMatch(c -> c.contains(shared) && !c.contains("inspect")),
+          "only ever inspected: " + docker.calls("volume"));
+    }
+    for (String own : List.of(DOT_CLAUDE, M2, PNPM)) {
+      assertFalse(docker.volumes().containsKey(own), "the runner's own is not made: " + own);
+    }
+    assertEquals(
+        Map.of("qits.projects.desk.runner", RUNNER_ID, "qits.projects.desk.runner.project", P1),
+        docker.volumes().get(desk(P1)),
+        "the desk's own volume is still the runner's");
+  }
+
+  @Test
+  void onlyTheExternalOnesAreLeftAloneTheRunnersOwnNodeVolumesAreStillMade() throws Exception {
+    extraEnv.put("QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME", SHARED_CLAUDE);
+    docker.volume(SHARED_CLAUDE, Map.of());
+    docker.answerFor("volume-inspect", SHARED_CLAUDE, 0, SHARED_CLAUDE + "\n", "");
+    estateThenAck(entry(P1, DesiredState.RUNNING, H1));
+    start();
+
+    awaitTrue(() -> !runsOf(desk(P1)).isEmpty());
+    String joined = String.join(" ", runOf(desk(P1)));
+    assertTrue(joined.contains("-v " + SHARED_CLAUDE + ":/claude-home"), joined);
+    assertTrue(joined.contains("-v " + M2 + ":/caches/m2"), joined);
+    assertTrue(joined.contains("-v " + PNPM + ":/caches/pnpm"), joined);
+    assertEquals(Map.of(), docker.volumes().get(SHARED_CLAUDE));
+    assertFalse(docker.volumes().containsKey(DOT_CLAUDE));
+    for (String own : List.of(M2, PNPM)) {
+      assertEquals(Map.of("qits.projects.desk.runner", RUNNER_ID), docker.volumes().get(own), own);
+    }
+  }
+
+  @Test
+  void aMissingExternalVolumeIsLaunchFailedAndNothingIsRunOrCreated() throws Exception {
+    extraEnv.putAll(SHARED_ENV);
+    for (String shared : List.of(SHARED_M2, SHARED_PNPM)) {
+      docker.volume(shared, Map.of());
+      docker.answerFor("volume-inspect", shared, 0, shared + "\n", "");
+    }
+    docker.answerFor(
+        "volume-inspect",
+        SHARED_CLAUDE,
+        1,
+        "",
+        "Error response from daemon: get " + SHARED_CLAUDE + ": no such volume");
+    estateThenAck(entry(P1, DesiredState.RUNNING, H1));
+    start();
+
+    LaunchFailed failed = host.await(LaunchFailed.class);
+    assertEquals(P1, failed.projectId());
+    assertEquals(
+        "node volume "
+            + SHARED_CLAUDE
+            + " named by QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME does not exist",
+        failed.detail());
+    assertTrue(runsOf(desk(P1)).isEmpty(), docker.calls()::toString);
+    assertTrue(
+        docker.calls("volume").stream().noneMatch(c -> c.contains("create")),
+        docker.calls()::toString);
+    assertFalse(docker.volumes().containsKey(SHARED_CLAUDE), "docker was never left to make it");
+    awaitTrue(() -> runner.session().held().isEmpty());
+    // Nor does the login probe make it: it cannot tell, so it says nothing.
+    Thread.sleep(300);
+    assertTrue(host.all(LoginState.class).isEmpty(), host.all(LoginState.class)::toString);
+    assertTrue(
+        docker.calls("run").stream().noneMatch(c -> c.contains("status")),
+        docker.calls()::toString);
+  }
+
+  @Test
+  void aDeskRunWithTheRunnersOwnVolumesIsRecreatedOnTheExternalOnesKeepingItsWorkspace()
+      throws Exception {
+    sharedVolumes();
+    seen(P1, "running", H1, OWN_MOUNTS);
+    seen(P2, "running", H2, null); // run before the mounts label existed
+    Map<String, String> labels =
+        Map.of("qits.projects.desk.runner", RUNNER_ID, "qits.projects.desk.runner.project", P1);
+    docker.volume(desk(P1), labels);
+    estateThenAck(entry(P1, DesiredState.RUNNING, H1), entry(P2, DesiredState.RUNNING, H2));
+    start();
+
+    awaitTrue(() -> !runsOf(desk(P1)).isEmpty() && !runsOf(desk(P2)).isEmpty());
+    List<List<String>> calls = docker.calls().stream().map(FakeDocker::withoutConfig).toList();
+    for (String project : List.of(P1, P2)) {
+      int stop = calls.indexOf(List.of("stop", desk(project)));
+      int removed = calls.indexOf(List.of("rm", "-f", desk(project)));
+      int run = calls.indexOf(runOf(desk(project)));
+      assertTrue(stop >= 0 && removed > stop && run > removed, "stop, rm, run: " + calls);
+      String joined = String.join(" ", runOf(desk(project)));
+      assertTrue(joined.contains("-v " + SHARED_CLAUDE + ":/claude-home"), joined);
+      assertTrue(joined.contains("qits.projects.desk.runner.mounts=" + sharedMounts()), joined);
+    }
+    assertEquals(labels, docker.volumes().get(desk(P1)), "the workspace volume is the work; it stays");
+    assertTrue(
+        docker.calls("volume").stream().noneMatch(c -> c.contains("rm")), calls::toString);
+  }
+
+  @Test
+  void aDeskAlreadyOnTheExternalVolumesIsLeftAlone() throws Exception {
+    sharedVolumes();
+    seen(P1, "running", H1, sharedMounts());
+    estateThenAck(entry(P1, DesiredState.RUNNING, H1));
+    start();
+
+    awaitTrue(() -> runner.session().held().equals(List.of(P1)));
+    host.await(LoginState.class);
+    for (String verb : List.of("start", "stop", "rm")) {
+      assertFalse(touched(verb, desk(P1)), docker.calls()::toString);
+    }
+    assertTrue(runsOf(desk(P1)).isEmpty(), docker.calls()::toString);
+  }
+
+  @Test
+  void housekeepingRemovesAnUnlistedDeskVolumeButNeverAnExternalOne() throws Exception {
+    housekeepingMillis = 200;
+    sharedVolumes();
+    seen(P1, "running", H1, sharedMounts());
+    seen(P3, "exited", H2, sharedMounts());
+    docker.volume(
+        desk(P3),
+        Map.of("qits.projects.desk.runner", RUNNER_ID, "qits.projects.desk.runner.project", P3));
+    estateThenAck(entry(P1, DesiredState.RUNNING, H1));
+    start();
+
+    awaitTrue(() -> !docker.volumes().containsKey(desk(P3)));
+    Thread.sleep(600); // several passes more
+    for (String shared : List.of(SHARED_CLAUDE, SHARED_M2, SHARED_PNPM)) {
+      assertEquals(Map.of(), docker.volumes().get(shared), shared);
+    }
+    assertTrue(
+        docker.calls("volume").stream()
+            .filter(c -> c.contains("rm"))
+            .noneMatch(c -> c.stream().anyMatch(a -> a.startsWith("qits_shared_"))),
+        docker.calls()::toString);
+  }
+
+  @Test
+  void theDecommissionHelperRemovesTheRunnersOwnVolumesAndNeverAnExternalOne() throws Exception {
+    sharedVolumes();
+    Map<String, String> own = Map.of("qits.projects.desk.runner", RUNNER_ID);
+    docker.volume(M2, own);
+    docker.volume(
+        desk(P1),
+        Map.of("qits.projects.desk.runner", RUNNER_ID, "qits.projects.desk.runner.project", P1));
+    // What a careless runner could have done: the shared volume mounted by a labelled desk.
+    docker.container(desk(P1), Map.of("qits.projects.desk.runner", RUNNER_ID));
+
+    Map<String, String> env = new HashMap<>(SHARED_ENV);
+    env.put(IDENTITY.env(eu.wohlben.qits.runner.toolkit.RunnerLauncher.DECOMMISSION), RUNNER_ID);
+    env.put(IDENTITY.env(RunnerSettings.DOCKER_BINARY), docker.binary());
+    int code =
+        eu.wohlben.qits.runner.toolkit.RunnerLauncher.main(
+            IDENTITY,
+            DeskRunnerDomain::new,
+            null,
+            new String[0],
+            env::get,
+            new java.io.PrintStream(new java.io.ByteArrayOutputStream(), true));
+
+    assertEquals(RunnerExit.OK, code);
+    assertFalse(docker.volumes().containsKey(M2), docker.calls()::toString);
+    assertFalse(docker.volumes().containsKey(desk(P1)), docker.calls()::toString);
+    for (String shared : List.of(SHARED_CLAUDE, SHARED_M2, SHARED_PNPM)) {
+      assertTrue(docker.volumes().containsKey(shared), "the helper never reaches " + shared);
+    }
+  }
+
+  @Test
+  void aSuccessorKeepsTheExternalVolumeVariables() throws Exception {
+    runnerContainer(
+        List.of(
+            "QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME=" + SHARED_CLAUDE,
+            "QITS_PROJECTS_DESK_RUNNER_M2_VOLUME=" + SHARED_M2,
+            "QITS_PROJECTS_DESK_RUNNER_PNPM_VOLUME=" + SHARED_PNPM));
+    sharedVolumes();
+    estateThenAck();
+    start();
+    host.await(Inventory.class);
+
+    host.send(new Upgrade(NEXT, IMAGE, DIGEST));
+    awaitCall(
+        c ->
+            c.stream()
+                .anyMatch(
+                    call ->
+                        call.getFirst().equals("run")
+                            && call.contains(IDENTITY.containerName(RUNNER_ID, NEXT))));
+    List<String> successor =
+        docker.calls("run").stream()
+            .filter(call -> call.contains(IDENTITY.containerName(RUNNER_ID, NEXT)))
+            .findFirst()
+            .orElseThrow();
+    for (String variable :
+        List.of(
+            "QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME=" + SHARED_CLAUDE,
+            "QITS_PROJECTS_DESK_RUNNER_M2_VOLUME=" + SHARED_M2,
+            "QITS_PROJECTS_DESK_RUNNER_PNPM_VOLUME=" + SHARED_PNPM)) {
+      int at = successor.indexOf(variable);
+      assertTrue(at > 0 && successor.get(at - 1).equals("-e"), variable + ": " + successor);
+    }
+    host.send(new Retire("superseded by " + NEXT));
+    assertEquals(RunnerExit.OK, exit.get(10, TimeUnit.SECONDS));
+    runner = null;
+  }
+
   // ---- the runner, the host's scripts and the node -------------------------------------------------
 
   private void start() throws Exception {
@@ -634,10 +890,13 @@ class DeskRunnerTest {
     env.put(IDENTITY.env(RunnerSettings.SLOTS), "2");
     env.put(IDENTITY.env(RunnerSettings.DOCKER_BINARY), docker.binary());
     env.put(IDENTITY.env(RunnerSettings.DOCKER_TIMEOUT), "10");
+    env.putAll(extraEnv);
     RunnerSettings settings =
         RunnerSettings.parse(IDENTITY, env::get)
             .withTiming(new RunnerSettings.Timing(10_000, 50, 200, 5_000, 300_000, 5));
-    domain = new DeskRunnerDomain(settings, timing, Clock.systemUTC());
+    domain =
+        new DeskRunnerDomain(
+            settings, ExternalVolumes.parse(IDENTITY, env::get), timing, Clock.systemUTC());
     runner =
         new RunnerRuntime<>(
             vertx,
@@ -703,21 +962,52 @@ class DeskRunnerTest {
 
   /** The project's desk container on the node, as docker's inspect answers it from now on. */
   private void seen(String projectId, String status, String specHash) throws Exception {
-    docker.container(
-        desk(projectId),
-        Map.of(
-            "qits.projects.desk.runner",
-            RUNNER_ID,
-            "qits.projects.desk.runner.project",
-            projectId,
-            "qits.projects.desk.runner.spec-hash",
-            specHash));
+    seen(projectId, status, specHash, OWN_MOUNTS);
+  }
+
+  /** The same, run with the node volumes {@code mounts} hashes (null: no mounts label at all). */
+  private void seen(String projectId, String status, String specHash, String mounts)
+      throws Exception {
+    Map<String, String> labels = new HashMap<>();
+    labels.put("qits.projects.desk.runner", RUNNER_ID);
+    labels.put("qits.projects.desk.runner.project", projectId);
+    labels.put("qits.projects.desk.runner.spec-hash", specHash);
+    if (mounts != null) {
+      labels.put("qits.projects.desk.runner.mounts", mounts);
+    }
+    docker.container(desk(projectId), labels);
     docker.answerFor(
         "inspect",
         desk(projectId),
         0,
-        "c-" + projectId + "|" + status + "|0|" + projectId + "|" + specHash + "\n",
+        "c-"
+            + projectId
+            + "|"
+            + status
+            + "|0|"
+            + projectId
+            + "|"
+            + specHash
+            + "|"
+            + (mounts == null ? "<no value>" : mounts)
+            + "\n",
         "");
+  }
+
+  /** The platform host's shared volumes on the node, unlabelled, each answering its inspect. */
+  private void sharedVolumes() throws Exception {
+    extraEnv.putAll(SHARED_ENV);
+    for (String shared : List.of(SHARED_CLAUDE, SHARED_M2, SHARED_PNPM)) {
+      docker.volume(shared, Map.of());
+      docker.answerFor("volume-inspect", shared, 0, shared + "\n", "");
+    }
+  }
+
+  /** The mounts label of a desk run with the shared volumes. */
+  private static String sharedMounts() throws Exception {
+    return new NodeVolumes(
+            IDENTITY, RUNNER_ID, ExternalVolumes.parse(IDENTITY, SHARED_ENV::get))
+        .mountsHash();
   }
 
   private List<List<String>> runsOf(String name) {
@@ -766,6 +1056,20 @@ class DeskRunnerTest {
    * install script started), its old image's config, and the pulled image's digest.
    */
   private void runnerContainer() throws Exception {
+    runnerContainer(List.of());
+  }
+
+  /** The same, the container having been given {@code extra} besides the install line's four. */
+  private void runnerContainer(List<String> extra) throws Exception {
+    List<String> env =
+        new java.util.ArrayList<>(
+            List.of(
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "QITS_PROJECTS_DESK_RUNNER_URL=https://projects.qits.example.eu",
+                "QITS_PROJECTS_DESK_RUNNER_ID=r1",
+                "QITS_PROJECTS_DESK_RUNNER_SLOTS=2",
+                "QITS_PROJECTS_DESK_RUNNER_REGISTRATION_TOKEN=qits_tok_SPENT"));
+    env.addAll(extra);
     docker.answerFor(
         "inspect",
         SELF,
@@ -778,14 +1082,7 @@ class DeskRunnerTest {
                         .put(
                             "Config",
                             new JsonObject()
-                                .put(
-                                    "Env",
-                                    List.of(
-                                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                                        "QITS_PROJECTS_DESK_RUNNER_URL=https://projects.qits.example.eu",
-                                        "QITS_PROJECTS_DESK_RUNNER_ID=r1",
-                                        "QITS_PROJECTS_DESK_RUNNER_SLOTS=2",
-                                        "QITS_PROJECTS_DESK_RUNNER_REGISTRATION_TOKEN=qits_tok_SPENT"))
+                                .put("Env", env)
                                 .put(
                                     "Labels",
                                     Map.of(

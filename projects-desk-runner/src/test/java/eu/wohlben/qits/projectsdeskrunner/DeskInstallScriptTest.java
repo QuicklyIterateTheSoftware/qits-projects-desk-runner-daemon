@@ -206,6 +206,49 @@ class DeskInstallScriptTest {
         List.of("run", "-d", "--name", name, "--restart", "unless-stopped"), run.subList(0, 6));
   }
 
+  /**
+   * The platform host's line: the page lists the three external-volume names as tuning, and a line
+   * that sets them hands each to the runner's container as {@code -e} — whence a successor's
+   * {@code SelfSpec} carries them on, as it carries every variable the container was given.
+   */
+  @Test
+  void theExternalVolumeTuningReachesTheRunnersContainer() throws Exception {
+    Path stubs = Files.createDirectories(work.resolve("stubs"));
+    Path docker = stubs.resolve("docker");
+    Files.writeString(
+        docker, "#!/bin/sh\nW='" + work + "'\nID='" + ID + "'\n" + STUB, StandardCharsets.UTF_8);
+    Files.setPosixFilePermissions(docker, PosixFilePermissions.fromString("rwxr-xr-x"));
+    Path script = work.resolve("runner-install.sh");
+    InstallScript.InstallPage page =
+        new InstallScript.InstallPage(
+            "the projects runners page",
+            List.of(
+                ExternalVolumes.CLAUDE_VOLUME,
+                ExternalVolumes.M2_VOLUME,
+                ExternalVolumes.PNPM_VOLUME));
+    Files.writeString(script, InstallScript.script(IDENTITY, page, REGISTRY));
+    Map<String, String> env = new java.util.HashMap<>();
+    env.put("PATH", stubs + ":/usr/bin:/bin");
+    env.put("QITS_PROJECTS_DESK_RUNNER_URL", "https://projects.qits.example.eu");
+    env.put("QITS_PROJECTS_DESK_RUNNER_ID", ID);
+    env.put("QITS_PROJECTS_DESK_RUNNER_REGISTRATION_TOKEN", "qits_tok_FIXTURE");
+    env.put("QITS_PROJECTS_DESK_RUNNER_SLOTS", "2");
+    env.put("QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME", "qits_shared_dot_claude");
+    env.put("QITS_PROJECTS_DESK_RUNNER_M2_VOLUME", "qits_shared_m2");
+    env.put("QITS_PROJECTS_DESK_RUNNER_PNPM_VOLUME", "qits_shared_pnpm");
+    assertEquals(0, sh(List.of("sh"), env, script));
+
+    List<String> run = Files.readAllLines(work.resolve("run-argv"));
+    for (String variable :
+        List.of(
+            "QITS_PROJECTS_DESK_RUNNER_CLAUDE_VOLUME=qits_shared_dot_claude",
+            "QITS_PROJECTS_DESK_RUNNER_M2_VOLUME=qits_shared_m2",
+            "QITS_PROJECTS_DESK_RUNNER_PNPM_VOLUME=qits_shared_pnpm")) {
+      int at = run.indexOf(variable);
+      assertTrue(at > 0 && run.get(at - 1).equals("-e"), variable + ": " + run);
+    }
+  }
+
   /** The install line, run against the stub docker: the script on stdin, the four values in env. */
   private int install() throws Exception {
     Path stubs = Files.createDirectories(work.resolve("stubs"));

@@ -43,7 +43,18 @@ it. Plain records, plain constructors, no annotations; fields are read through `
 
 **`Main` is the only CDI bean.** Everything below it is a plain class taking its collaborators as
 constructor arguments; nothing reads configuration — the toolkit's `RunnerSettings` parses the
-environment (`QITS_PROJECTS_DESK_RUNNER_*`).
+environment (`QITS_PROJECTS_DESK_RUNNER_*`), and `Main` parses the runner's own beside it
+(`ExternalVolumes`: `…_CLAUDE_VOLUME`, `…_M2_VOLUME`, `…_PNPM_VOLUME`, exit 2 on a bad name). A
+successor gets them for free: the toolkit's `SelfSpec` carries every variable the container was
+given.
+
+**An external node volume is never the runner's.** On the platform host the install line names the
+shared `qits_shared_dot_claude`, `qits_shared_m2` and `qits_shared_pnpm`; desks and the login probe
+mount them in place of the runner's own (`NodeVolumes`), and nothing creates, labels or removes
+them — `NodeVolumes.owned()` is what gets ensured, and every removal selects by the runner's label,
+which they never carry. A missing one is `launchFailed` before `docker run`, because `-v` would
+create it empty. A desk's `qits.projects.desk.runner.mounts` label hashes its node volumes; a
+mismatch (or none) recreates it like a spec-hash change.
 
 **Every name on a node is derived**, from the identity (`RunnerIdentity.nodeName`/`nodeVolume`,
 `OwnResources.labels`) — never from a frame and never a literal. A desk's container and its
@@ -78,7 +89,8 @@ The lifecycle frames (`hello`, `ack`, `heartbeat`, `backlog`, `reserve`, `nothin
 A desk's `DeskSpec` arrives over a socket and becomes an argv to a root-equivalent daemon:
 
 - **The shape is the boundary.** No network, no extra host, no docker socket, no mounts, no
-  free-form argv, no volume name — the runner names the volumes and where they land. A capability
+  free-form argv, no volume name — the runner names the volumes and where they land (the external
+  node volumes come from the operator's install line, never from a frame). A capability
   the record cannot express is a change to it.
 - **The runner's own label namespace (`qits.projects.desk.runner.`) is the driver's.**
 - **Every listing and removal selects by the runner's own label or a name it derived**, never
