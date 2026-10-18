@@ -1,0 +1,239 @@
+{
+  "consumer": {
+    "name": "qits-projects-desk-runner-daemon"
+  },
+  "interactions": [
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-projects-service",
+            "operationId": "registerDeskRunner"
+          },
+          "qits-trigger": {
+            "app": "qits-projects-desk-runner-daemon",
+            "event": "the runner's start",
+            "kind": "event"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-runner-toolkit",
+            "repository": "qits-runner-javalib",
+            "version": "2026.1018.151254"
+          }
+        }
+      },
+      "description": "the runner's start: registerDeskRunner",
+      "key": "ef7b7749",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a registered runner",
+          "params": {
+            "authorization": "Bearer qits_tok_contract-registration",
+            "runnerId": "00000000-0000-4000-8000-000000000001"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "capabilities": {
+              "arch": "amd64",
+              "docker": true,
+              "labels": {
+                "site": "home"
+              },
+              "os": "linux"
+            }
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          },
+          "path": {
+            "dataType": "RAW",
+            "expression": "/projects/api/runners/${runnerId}/register",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Bearer qits_tok_contract-registration"
+          ],
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "POST",
+        "path": "/projects/api/runners/00000000-0000-4000-8000-000000000001/register"
+      },
+      "response": {
+        "status": 409
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-projects-service",
+            "operationId": "registerDeskRunner"
+          },
+          "qits-trigger": {
+            "app": "qits-projects-desk-runner-daemon",
+            "event": "the runner's start",
+            "kind": "event"
+          },
+          "qits-via": {
+            "artifact": "eu.wohlben.qits:qits-runner-toolkit",
+            "repository": "qits-runner-javalib",
+            "version": "2026.1018.151254"
+          }
+        }
+      },
+      "description": "the runner's start: registerDeskRunner",
+      "key": "2f69f196",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "an unregistered runner",
+          "params": {
+            "authorization": "Bearer qits_tok_contract-registration",
+            "runnerId": "00000000-0000-4000-8000-000000000001"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "capabilities": {
+              "arch": "amd64",
+              "docker": true,
+              "labels": {
+                "site": "home"
+              },
+              "os": "linux"
+            }
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          },
+          "path": {
+            "dataType": "RAW",
+            "expression": "/projects/api/runners/${runnerId}/register",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Bearer qits_tok_contract-registration"
+          ],
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "POST",
+        "path": "/projects/api/runners/00000000-0000-4000-8000-000000000001/register"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "audience": "qits-platform",
+            "clientId": "run-client-1",
+            "secret": "run-s3cr3t-1",
+            "socketUrl": "wss://projects.qits.suite.example/projects/runners/socket",
+            "tokenUrl": "https://idp.qits.suite.example/idp/token"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.audience": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.clientId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.secret": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.socketUrl": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.tokenUrl": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    },
+    "plugins": []
+  },
+  "provider": {
+    "name": "qits-projects-service"
+  }
+}
