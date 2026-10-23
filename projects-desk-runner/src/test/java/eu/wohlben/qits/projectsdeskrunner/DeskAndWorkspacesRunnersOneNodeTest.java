@@ -41,6 +41,7 @@ import eu.wohlben.qits.runner.toolkit.Telemetry;
 import eu.wohlben.qits.runner.toolkit.testing.FakeDocker;
 import eu.wohlben.qits.runner.toolkit.testing.FakeRunnerHost;
 import io.vertx.core.Vertx;
+import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -53,7 +54,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -180,22 +183,22 @@ class DeskAndWorkspacesRunnersOneNodeTest {
     start("ws", WORKSPACES, WS_ID, wsState, wsHost, tenant, "a1a1a1a1a1a1");
 
     // Both converge: the desk of P2 runs, the workspace w1 runs, the workspace leftover is reaped.
-    awaitTrue(() -> node.containers().containsKey(desk2));
+    awaitTrue(() -> containers().containsKey(desk2));
     node.answerFor("inspect", desk2, 0, "c2|running|0|" + P2 + "|h2|" + mounts + "\n", "");
-    awaitTrue(() -> node.containers().containsKey(WORKSPACES.nodeName(WS_ID, "item-w1")));
-    awaitTrue(() -> !node.containers().containsKey(leftover));
-    awaitTrue(() -> !node.volumes().containsKey(leftover));
+    awaitTrue(() -> containers().containsKey(WORKSPACES.nodeName(WS_ID, "item-w1")));
+    awaitTrue(() -> !containers().containsKey(leftover));
+    awaitTrue(() -> !volumes().containsKey(leftover));
 
     // The desk of P1 leaves the estate: its container goes at once, its volume at housekeeping.
     deskHost.send(new Estate(List.of(entry(P2, "h2")), DESK_IMAGE));
-    awaitTrue(() -> !node.containers().containsKey(desk1));
-    awaitTrue(() -> !node.volumes().containsKey(desk1));
+    awaitTrue(() -> !containers().containsKey(desk1));
+    awaitTrue(() -> !volumes().containsKey(desk1));
     // Several passes of both runners' housekeeping.
     Thread.sleep(800);
 
     assertEquals(
         Set.of(desk2, WORKSPACES.nodeName(WS_ID, "item-w1")),
-        node.containers().keySet(),
+        containers().keySet(),
         "each runner's own workload, nothing else");
     assertEquals(
         Set.of(
@@ -204,8 +207,8 @@ class DeskAndWorkspacesRunnersOneNodeTest {
             DESK.nodeVolume(DESK_ID, "m2"),
             DESK.nodeVolume(DESK_ID, "pnpm"),
             WORKSPACES.nodeVolume(WS_ID, "data-w1")),
-        node.volumes().keySet());
-    for (String name : node.containers().keySet()) {
+        volumes().keySet());
+    for (String name : containers().keySet()) {
       assertTrue(name.endsWith("-" + ID8), "both ids' first eight characters: " + name);
     }
 
@@ -290,9 +293,45 @@ class DeskAndWorkspacesRunnersOneNodeTest {
         hash);
   }
 
+  /**
+   * The fake's state, read while the runner's passes run beside the test: housekeeping may remove
+   * a volume between the fake listing it and reading its labels file. A read that loses that race
+   * is read again, until the state holds still long enough to be read whole.
+   */
+  private Map<String, Map<String, String>> volumes() {
+    return settled(node::volumes);
+  }
+
+  /** The fake's containers, read the same way. */
+  private Map<String, Map<String, String>> containers() {
+    return settled(node::containers);
+  }
+
+  private static <T> T settled(Supplier<T> read) {
+    UncheckedIOException last = null;
+    for (int attempt = 0; attempt < 200; attempt++) {
+      try {
+        return read.get();
+      } catch (UncheckedIOException vanished) {
+        last = vanished;
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+      }
+    }
+    throw last;
+  }
+
+  /** A probe holds or it does not; one that threw mid-read is "not yet", never an escape. */
+  private static boolean holds(BooleanSupplier condition) {
+    try {
+      return condition.getAsBoolean();
+    } catch (RuntimeException notYet) {
+      return false;
+    }
+  }
+
   private static void awaitTrue(BooleanSupplier condition) throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
-    while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+    while (!holds(condition) && System.nanoTime() < deadline) {
       Thread.sleep(20);
     }
     assertTrue(condition.getAsBoolean(), "the condition never held");

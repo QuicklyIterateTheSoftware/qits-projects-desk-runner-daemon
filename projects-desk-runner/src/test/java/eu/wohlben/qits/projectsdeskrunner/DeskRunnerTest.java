@@ -45,6 +45,7 @@ import eu.wohlben.qits.runner.toolkit.testing.FakeRunnerHost;
 import io.vertx.core.Vertx;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
+import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -56,7 +57,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.function.Predicate;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -261,9 +264,9 @@ class DeskRunnerTest {
     }
     assertEquals(
         Map.of("qits.projects.desk.runner", RUNNER_ID, "qits.projects.desk.runner.project", P1),
-        docker.volumes().get(desk(P1)));
+        volumes().get(desk(P1)));
     for (String node : List.of(DOT_CLAUDE, M2, PNPM)) {
-      assertEquals(Map.of("qits.projects.desk.runner", RUNNER_ID), docker.volumes().get(node), node);
+      assertEquals(Map.of("qits.projects.desk.runner", RUNNER_ID), volumes().get(node), node);
     }
     // One inventory at the Ack, one after the convergence.
     awaitTrue(() -> host.all(Inventory.class).size() >= 2);
@@ -301,7 +304,7 @@ class DeskRunnerTest {
     int run = calls.indexOf(runOf(desk(P1)));
     assertTrue(stop >= 0 && removed > stop && run > removed, "stop, rm, run: " + calls);
     assertTrue(runOf(desk(P1)).contains("qits.projects.desk.runner.spec-hash=" + H1));
-    assertEquals(labels, docker.volumes().get(desk(P1)), "the volume is the work; it stays");
+    assertEquals(labels, volumes().get(desk(P1)), "the volume is the work; it stays");
     assertTrue(docker.calls("volume").stream().noneMatch(c -> c.contains("rm")), calls::toString);
   }
 
@@ -318,8 +321,8 @@ class DeskRunnerTest {
     host.send(new Estate(List.of(entry(P1, DesiredState.STOPPED, H1)), DESK_IMAGE));
     awaitCall(c -> has(c, List.of("stop", desk(P1))));
     awaitTrue(() -> runner.session().held().isEmpty());
-    assertTrue(docker.containers().containsKey(desk(P1)), "stopped, not removed");
-    assertTrue(docker.volumes().containsKey(desk(P1)), "the volume is kept");
+    assertTrue(containers().containsKey(desk(P1)), "stopped, not removed");
+    assertTrue(volumes().containsKey(desk(P1)), "the volume is kept");
     assertFalse(touched("rm", desk(P1)), docker.calls()::toString);
   }
 
@@ -335,13 +338,13 @@ class DeskRunnerTest {
 
     host.send(new Remove(P1));
     assertEquals(new Removed(P1), host.await(Removed.class));
-    assertFalse(docker.containers().containsKey(desk(P1)));
-    assertFalse(docker.volumes().containsKey(desk(P1)));
+    assertFalse(containers().containsKey(desk(P1)));
+    assertFalse(volumes().containsKey(desk(P1)));
     List<List<String>> calls = docker.calls().stream().map(FakeDocker::withoutConfig).toList();
     int stop = calls.lastIndexOf(List.of("stop", desk(P1)));
     int rm = calls.indexOf(List.of("rm", "-f", desk(P1)));
     assertTrue(stop >= 0 && rm > stop, "a graceful stop, then rm -f: " + calls);
-    assertTrue(docker.volumes().containsKey(DOT_CLAUDE), "the node's agent home is no desk's");
+    assertTrue(volumes().containsKey(DOT_CLAUDE), "the node's agent home is no desk's");
     awaitTrue(() -> runner.session().held().isEmpty());
 
     host.send(new Remove(P2));
@@ -373,19 +376,19 @@ class DeskRunnerTest {
 
     // Several housekeeping passes, and no estate: nothing goes.
     Thread.sleep(1_000);
-    assertTrue(docker.containers().keySet().containsAll(Set.of(desk(P1), desk(P3))));
-    assertTrue(docker.volumes().keySet().containsAll(Set.of(desk(P1), desk(P3))));
+    assertTrue(containers().keySet().containsAll(Set.of(desk(P1), desk(P3))));
+    assertTrue(volumes().keySet().containsAll(Set.of(desk(P1), desk(P3))));
     assertTrue(docker.calls("rm").isEmpty(), docker.calls()::toString);
     assertTrue(
         docker.calls("volume").stream().noneMatch(c -> c.contains("rm")), docker.calls()::toString);
 
     host.send(new Estate(List.of(entry(P1, DesiredState.RUNNING, H1)), DESK_IMAGE));
-    awaitTrue(() -> !docker.containers().containsKey(desk(P3)));
-    awaitTrue(() -> !docker.volumes().containsKey(desk(P3)));
+    awaitTrue(() -> !containers().containsKey(desk(P3)));
+    awaitTrue(() -> !volumes().containsKey(desk(P3)));
 
     assertEquals(
         Set.of(desk(P1), desk(P3) + "-copy", "qits-projects-desk-runner-desk-" + P2 + "-r2"),
-        docker.containers().keySet());
+        containers().keySet());
     assertEquals(
         Set.of(
             desk(P1),
@@ -394,7 +397,7 @@ class DeskRunnerTest {
             PNPM,
             "qits-projects-desk-runner-desk-" + P2 + "-r1",
             "qits-projects-desk-runner-desk-" + P2 + "-r2"),
-        docker.volumes().keySet());
+        volumes().keySet());
     awaitTrue(
         () ->
             host.all(Inventory.class).stream()
@@ -531,7 +534,7 @@ class DeskRunnerTest {
             "auth",
             "status"),
         probe);
-    assertEquals(Map.of("qits.projects.desk.runner", RUNNER_ID), docker.volumes().get(DOT_CLAUDE));
+    assertEquals(Map.of("qits.projects.desk.runner", RUNNER_ID), volumes().get(DOT_CLAUDE));
 
     // The operator logs in on the node.
     docker.answerFor("run", "status", 0, "{\"loggedIn\": true}\n", "");
@@ -590,7 +593,7 @@ class DeskRunnerTest {
         run,
         "no env, no mount, no restart policy, the runner's ownership label only");
     assertTrue(calls.indexOf(pull) < calls.indexOf(run), "pulled before it is run: " + calls);
-    assertFalse(docker.containers().containsKey(name), "removed again");
+    assertFalse(containers().containsKey(name), "removed again");
   }
 
   @Test
@@ -607,7 +610,7 @@ class DeskRunnerTest {
     assertFalse(checked.ok());
     assertTrue(checked.detail().contains("did not run"), checked.detail());
     assertTrue(docker.calls("pull").isEmpty(), "an image already here is not pulled again");
-    assertFalse(docker.containers().containsKey(name));
+    assertFalse(containers().containsKey(name));
   }
 
   // ---- rollover and decommission ------------------------------------------------------------------
@@ -633,8 +636,8 @@ class DeskRunnerTest {
     host.send(new Retire("superseded by " + NEXT));
     assertEquals(RunnerExit.OK, exit.get(10, TimeUnit.SECONDS));
     runner = null;
-    assertTrue(docker.containers().containsKey(desk(P1)));
-    assertTrue(docker.containers().containsKey(desk(P2)));
+    assertTrue(containers().containsKey(desk(P1)));
+    assertTrue(containers().containsKey(desk(P2)));
     for (String verb : List.of("stop", "rm", "start", "update")) {
       assertFalse(touched(verb, desk(P1)), docker.calls()::toString);
       assertFalse(touched(verb, desk(P2)), docker.calls()::toString);
@@ -683,18 +686,18 @@ class DeskRunnerTest {
     assertTrue(probe.contains(SHARED_CLAUDE + ":/claude-home"), probe::toString);
 
     for (String shared : List.of(SHARED_CLAUDE, SHARED_M2, SHARED_PNPM)) {
-      assertEquals(Map.of(), docker.volumes().get(shared), "never labelled: " + shared);
+      assertEquals(Map.of(), volumes().get(shared), "never labelled: " + shared);
       assertTrue(
           docker.calls("volume").stream()
               .noneMatch(c -> c.contains(shared) && !c.contains("inspect")),
           "only ever inspected: " + docker.calls("volume"));
     }
     for (String own : List.of(DOT_CLAUDE, M2, PNPM)) {
-      assertFalse(docker.volumes().containsKey(own), "the runner's own is not made: " + own);
+      assertFalse(volumes().containsKey(own), "the runner's own is not made: " + own);
     }
     assertEquals(
         Map.of("qits.projects.desk.runner", RUNNER_ID, "qits.projects.desk.runner.project", P1),
-        docker.volumes().get(desk(P1)),
+        volumes().get(desk(P1)),
         "the desk's own volume is still the runner's");
   }
 
@@ -711,10 +714,10 @@ class DeskRunnerTest {
     assertTrue(joined.contains("-v " + SHARED_CLAUDE + ":/claude-home"), joined);
     assertTrue(joined.contains("-v " + M2 + ":/caches/m2"), joined);
     assertTrue(joined.contains("-v " + PNPM + ":/caches/pnpm"), joined);
-    assertEquals(Map.of(), docker.volumes().get(SHARED_CLAUDE));
-    assertFalse(docker.volumes().containsKey(DOT_CLAUDE));
+    assertEquals(Map.of(), volumes().get(SHARED_CLAUDE));
+    assertFalse(volumes().containsKey(DOT_CLAUDE));
     for (String own : List.of(M2, PNPM)) {
-      assertEquals(Map.of("qits.projects.desk.runner", RUNNER_ID), docker.volumes().get(own), own);
+      assertEquals(Map.of("qits.projects.desk.runner", RUNNER_ID), volumes().get(own), own);
     }
   }
 
@@ -745,7 +748,7 @@ class DeskRunnerTest {
     assertTrue(
         docker.calls("volume").stream().noneMatch(c -> c.contains("create")),
         docker.calls()::toString);
-    assertFalse(docker.volumes().containsKey(SHARED_CLAUDE), "docker was never left to make it");
+    assertFalse(volumes().containsKey(SHARED_CLAUDE), "docker was never left to make it");
     awaitTrue(() -> runner.session().held().isEmpty());
     // Nor does the login probe make it: it cannot tell, so it says nothing.
     Thread.sleep(300);
@@ -778,7 +781,7 @@ class DeskRunnerTest {
       assertTrue(joined.contains("-v " + SHARED_CLAUDE + ":/claude-home"), joined);
       assertTrue(joined.contains("qits.projects.desk.runner.mounts=" + sharedMounts()), joined);
     }
-    assertEquals(labels, docker.volumes().get(desk(P1)), "the workspace volume is the work; it stays");
+    assertEquals(labels, volumes().get(desk(P1)), "the workspace volume is the work; it stays");
     assertTrue(
         docker.calls("volume").stream().noneMatch(c -> c.contains("rm")), calls::toString);
   }
@@ -810,10 +813,10 @@ class DeskRunnerTest {
     estateThenAck(entry(P1, DesiredState.RUNNING, H1));
     start();
 
-    awaitTrue(() -> !docker.volumes().containsKey(desk(P3)));
+    awaitTrue(() -> !volumes().containsKey(desk(P3)));
     Thread.sleep(600); // several passes more
     for (String shared : List.of(SHARED_CLAUDE, SHARED_M2, SHARED_PNPM)) {
-      assertEquals(Map.of(), docker.volumes().get(shared), shared);
+      assertEquals(Map.of(), volumes().get(shared), shared);
     }
     assertTrue(
         docker.calls("volume").stream()
@@ -846,10 +849,10 @@ class DeskRunnerTest {
             new java.io.PrintStream(new java.io.ByteArrayOutputStream(), true));
 
     assertEquals(RunnerExit.OK, code);
-    assertFalse(docker.volumes().containsKey(M2), docker.calls()::toString);
-    assertFalse(docker.volumes().containsKey(desk(P1)), docker.calls()::toString);
+    assertFalse(volumes().containsKey(M2), docker.calls()::toString);
+    assertFalse(volumes().containsKey(desk(P1)), docker.calls()::toString);
     for (String shared : List.of(SHARED_CLAUDE, SHARED_M2, SHARED_PNPM)) {
-      assertTrue(docker.volumes().containsKey(shared), "the helper never reaches " + shared);
+      assertTrue(volumes().containsKey(shared), "the helper never reaches " + shared);
     }
   }
 
@@ -1048,9 +1051,45 @@ class DeskRunnerTest {
     return calls.stream().map(FakeDocker::withoutConfig).anyMatch(call::equals);
   }
 
+  /**
+   * The fake's state, read while the runner's passes run beside the test: housekeeping may remove
+   * a volume between the fake listing it and reading its labels file. A read that loses that race
+   * is read again, until the state holds still long enough to be read whole.
+   */
+  private Map<String, Map<String, String>> volumes() {
+    return settled(docker::volumes);
+  }
+
+  /** The fake's containers, read the same way. */
+  private Map<String, Map<String, String>> containers() {
+    return settled(docker::containers);
+  }
+
+  private static <T> T settled(Supplier<T> read) {
+    UncheckedIOException last = null;
+    for (int attempt = 0; attempt < 200; attempt++) {
+      try {
+        return read.get();
+      } catch (UncheckedIOException vanished) {
+        last = vanished;
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+      }
+    }
+    throw last;
+  }
+
+  /** A probe holds or it does not; one that threw mid-read is "not yet", never an escape. */
+  private static boolean holds(BooleanSupplier condition) {
+    try {
+      return condition.getAsBoolean();
+    } catch (RuntimeException notYet) {
+      return false;
+    }
+  }
+
   private static void awaitTrue(BooleanSupplier condition) throws InterruptedException {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
-    while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+    while (!holds(condition) && System.nanoTime() < deadline) {
       Thread.sleep(20);
     }
     assertTrue(condition.getAsBoolean(), "the condition never held");
