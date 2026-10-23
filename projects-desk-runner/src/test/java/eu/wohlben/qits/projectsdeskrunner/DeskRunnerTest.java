@@ -240,13 +240,25 @@ class DeskRunnerTest {
     assertEquals("--config", pull.getFirst(), "pulled under the runner's own throwaway login");
     assertEquals(List.of("pull", DESK_IMAGE), FakeDocker.withoutConfig(pull));
     assertTrue(calls.indexOf(pull) < calls.indexOf(run), "pulled before it is run: " + calls);
-    int lastVolume = -1;
-    for (int i = 0; i < calls.size(); i++) {
-      if (calls.get(i).size() > 1 && calls.get(i).get(0).equals("volume")) {
-        lastVolume = i;
+    // Not a global order: onAck's ensure, the reconcile, housekeeping and the check run
+    // concurrently, so other passes' volume calls may land anywhere. What matters is that every
+    // volume the run mounts was created labelled before that run.
+    int runAt = calls.indexOf(run);
+    for (String mounted : List.of(desk(P1), DOT_CLAUDE, M2, PNPM)) {
+      int created = -1;
+      for (int i = 0; i < runAt; i++) {
+        List<String> c = calls.get(i);
+        if (c.size() > 2
+            && c.get(0).equals("volume")
+            && c.get(1).equals("create")
+            && c.getLast().equals(mounted)
+            && c.contains("--label")) {
+          created = i;
+          break;
+        }
       }
+      assertTrue(created >= 0, mounted + " created labelled before its run: " + calls);
     }
-    assertTrue(lastVolume >= 0 && lastVolume < calls.indexOf(run), "volumes first: " + calls);
     assertEquals(
         Map.of("qits.projects.desk.runner", RUNNER_ID, "qits.projects.desk.runner.project", P1),
         docker.volumes().get(desk(P1)));
