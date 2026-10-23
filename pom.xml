@@ -18,7 +18,7 @@
          every <version> here to the tag it cuts. -->
     <groupId>eu.wohlben.qits</groupId>
     <artifactId>qits-projects-desk-runner</artifactId>
-    <version>2026.1023.53023</version>
+    <version>2026.1023.65114</version>
     <packaging>pom</packaging>
 
     <modules>
